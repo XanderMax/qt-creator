@@ -147,6 +147,8 @@
 #include <QVariant>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QDebug>
+#include <QProcessEnvironment>
 
 #ifdef WITH_TESTS
 
@@ -641,6 +643,7 @@ public:
     void attachToUnstartedApplicationDialog();
     void attachToQmlPort();
     void runScheduled();
+    void attachCoreEnv(const FilePath &bin, const QString &core, const Id& kit, const QString& init, const QString &sysroot);
     void attachCore();
     void reloadDebuggingHelpers();
 
@@ -1514,6 +1517,34 @@ void DebuggerPluginPrivate::onStartupProjectChanged(Project *project)
     updatePresetState();
 }
 
+void DebuggerPluginPrivate::attachCoreEnv(const FilePath &bin, const QString &core, const Id& kitId, const QString& init, const QString& sysroot)
+{
+    setConfigValue("LastExternalExecutableFile", bin.toVariant());
+    setConfigValue("LastLocalCoreFile", core);
+    setConfigValue("LastRemoteCoreFile", configValue("LastRemoteCoreFile").toString());
+    setConfigValue("LastExternalKit", kitId.toSetting());
+    setConfigValue("LastExternalStartScript", init);
+    setConfigValue("LastForceLocalCoreFile", configValue("LastForceLocalCoreFile").toBool());
+    Kit* k = KitManager::kit(kitId);
+    if (!k) {qDebug() << "[XANDER] Something went wrong"; return;}
+    k->setValue(SysRootKitAspect::id(), sysroot);
+    qDebug() << "[XANDER]" << k->value(SysRootKitAspect::id());
+    auto runControl = new RunControl(ProjectExplorer::Constants::DEBUG_RUN_MODE);
+    runControl->setKit(KitManager::kit(kitId));
+    runControl->setDisplayName(tr("Core file \"%1\"").arg(core));
+    FilePath deb = FilePath::fromString(sysroot);
+    deb = deb.parentDir().stringAppended("/x86_64-oesdk-linux/usr/bin/aarch64-gnu-linux/aarch64-gnu-linux-gdb");
+    qDebug() << "[XANDER]" << deb.toString();
+    qputenv("QTC_DEBUGGER_PATH", QByteArray::fromStdString(deb.toString().toStdString()));
+    auto debugger = new DebuggerRunTool(runControl);
+    debugger->setInferiorExecutable(bin);
+    debugger->setCoreFileName(core);
+    debugger->setStartMode(AttachToCore);
+    debugger->setCloseMode(DetachAtClose);
+    debugger->setOverrideStartScript(init);
+    debugger->startRunControl();
+}
+
 void DebuggerPluginPrivate::attachCore()
 {
     AttachCoreDialog dlg(ICore::dialogParent());
@@ -2125,6 +2156,20 @@ bool DebuggerPlugin::initialize(const QStringList &arguments, QString *errorMess
     ExtensionSystem::PluginManager::addObject(this);
 
     dd = new DebuggerPluginPrivate(arguments);
+    qDebug() << "[XANDER]" << configValue("LastExternalExecutableFile").toString();
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    QString core = env.value("SMART_GDB_COREDUMP");
+    QString binary = env.value("SMART_GDB_BINARY");
+    QString init = env.value("SMART_GDB_INIT_SCRIPT");
+    QString kit = env.value("SMART_GDB_KIT_HASH");
+    QString sysroot = env.value("SMART_GDB_SYSROOT");
+    qDebug() << "[XANDER]" << core << binary << init << kit << sysroot;
+
+    if (!core.isEmpty()) QTimer::singleShot(5000, dd, [=]()
+    {
+        dd->attachCoreEnv(FilePath::fromString(binary), core, Id(kit.toStdString().c_str()), init, sysroot);
+    });
     return true;
 }
 
